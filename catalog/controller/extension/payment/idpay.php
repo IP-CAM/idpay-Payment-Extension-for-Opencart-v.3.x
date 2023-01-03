@@ -42,11 +42,18 @@ class ControllerExtensionPaymentIdpay extends Controller
      */
     public function confirm()
     {
+        $this->doPayment();
+    }
+
+    public function doPayment()
+    {
         $this->load->language('extension/payment/idpay');
 
         $this->load->model('checkout/order');
+
         /** @var \ModelCheckoutOrder $model */
         $model = $this->model_checkout_order;
+
         $order_id = $this->session->data['order_id'];
         $order_info = $model->getOrder($order_id);
 
@@ -110,19 +117,20 @@ class ControllerExtensionPaymentIdpay extends Controller
         $this->response->setOutput(json_encode($json));
     }
 
+
+    public function isNotDoubleSpending($orderId,$transactionId){
+        $sql = $this->db->query('SELECT `comment`  FROM ' . DB_PREFIX . 'order_history WHERE order_id = ' . $orderId . ' AND `comment` LIKE "' . $this->generateString($transactionId) . '"');
+       return  count($sql->row) != 0;
+    }
+
     /**
      * http request callback
      */
     public function callback()
     {
-        if ($this->session->data['payment_method']['code'] == 'idpay') {
-
-            // Check method http request
-            $method = !empty($this->request->server['REQUEST_METHOD']) ? strtolower($this->request->server['REQUEST_METHOD']) : null;
-            if (empty($method)) {
-                die;
-            }
-
+        $checkTransactionByIdpay = $this->request->request['route'] ;
+        if (strpos($checkTransactionByIdpay,'idpay') !== false) {
+            $method = !empty($this->request->server['REQUEST_METHOD']) ? strtolower($this->request->server['REQUEST_METHOD']) : die;
             $status = empty($this->request->{$method}['status']) ? NULL : $this->request->{$method}['status'];
             $track_id = empty($this->request->{$method}['track_id']) ? NULL : $this->request->{$method}['track_id'];
             $id = empty($this->request->{$method}['id']) ? NULL : $this->request->{$method}['id'];
@@ -145,17 +153,11 @@ class ControllerExtensionPaymentIdpay extends Controller
                 'href' => $this->url->link('extension/payment/idpay/callback', '', true)
             );
 
-
-            if ($this->session->data['order_id'] != $order_id) {
-                $comment = 'شماره سفارش اشتباه است.';
-                $data['peyment_result'] = $comment;
-                $data['button_continue'] = $this->language->get('button_view_cart');
-                $data['continue'] = $this->url->link('checkout/cart');
-            } else {
                 $this->load->model('checkout/order');
 
                 /** @var  \ModelCheckoutOrder $model */
                 $model = $this->model_checkout_order;
+
                 $order_info = $model->getOrder($order_id);
 
                 if (!$order_info) {
@@ -175,6 +177,15 @@ class ControllerExtensionPaymentIdpay extends Controller
                         $data['continue'] = $this->url->link('checkout/cart');
 
                     } else {
+
+                    if ($this->isNotDoubleSpending($order_id,$id) == false) {
+                        $comment = $this->idpay_get_failed_message($track_id, $order_id, 0);
+                        $model->addOrderHistory($order_id, 10, $this->otherStatusMessages($status), true);
+                        $data['peyment_result'] = $comment;
+                        $data['button_continue'] = $this->language->get('button_view_cart');
+                        $data['continue'] = $this->url->link('checkout/cart');
+                    }
+
                         $amount = $this->correctAmount($order_info);
                         $api_key = $this->config->get('payment_idpay_api_key');
                         $sandbox = $this->config->get('payment_idpay_sandbox') == 'yes' ? 'true' : 'false';
@@ -213,8 +224,6 @@ class ControllerExtensionPaymentIdpay extends Controller
                             $verify_amount = empty($result->amount) ? NULL : $result->amount;
 
 
-                            //get result id from database
-                            $sql = $this->db->query('SELECT `comment`  FROM ' . DB_PREFIX . 'order_history WHERE order_id = ' . $order_id . ' AND `comment` LIKE "' . $this->generateString($result->id) . '"');
 
                             if (empty($verify_status) || empty($verify_track_id) || empty($verify_amount) || $verify_amount != $amount || $verify_status < 100) {
                                 $comment = $this->idpay_get_failed_message($verify_track_id, $verify_order_id);
@@ -224,17 +233,13 @@ class ControllerExtensionPaymentIdpay extends Controller
                                 $data['button_continue'] = $this->language->get('button_view_cart');
                                 $data['continue'] = $this->url->link('checkout/cart');
 
-                            } elseif ($order_id !== $result->order_id or count($sql->row) == 0) {
-
-                                //check double spending
+                            } elseif ($order_id !== $result->order_id) {
                                 $comment = $this->idpay_get_failed_message($track_id, $order_id, 0);
                                 $model->addOrderHistory($order_id, 10, $this->otherStatusMessages($status), true);
                                 $data['peyment_result'] = $comment;
                                 $data['button_continue'] = $this->language->get('button_view_cart');
                                 $data['continue'] = $this->url->link('checkout/cart');
-
-
-                            } else { // Transaction is successful.
+                            } else {
 
                                 $comment = $this->idpay_get_success_message($verify_track_id, $verify_order_id);
                                 $config_successful_payment_status = $this->config->get('payment_idpay_order_status_id');
@@ -250,8 +255,6 @@ class ControllerExtensionPaymentIdpay extends Controller
                         }
                     }
                 }
-            }
-
 
             $data['column_left'] = $this->load->controller('common/column_left');
             $data['column_right'] = $this->load->controller('common/column_right');
